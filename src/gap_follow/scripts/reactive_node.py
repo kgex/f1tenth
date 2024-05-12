@@ -4,8 +4,6 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped
 import numpy as np
-import concurrent.futures
-import time
 
 class ReactiveFollowGap(Node):
     """
@@ -36,12 +34,12 @@ class ReactiveFollowGap(Node):
 
         # Initialize the ReactiveFollowGap parameters
         self.radians_per_elem = None
-        self.BUBBLE_RADIUS = 160 #160
+        self.BUBBLE_RADIUS = 190
         self.PREPROCESS_CONV_SIZE = 3
-        self.BEST_POINT_CONV_SIZE = 80
-        self.MAX_LIDAR_DIST = 3000000
-        self.STRAIGHTS_SPEED = 8.0 #8
-        self.CORNERS_SPEED = 5.0  #5
+        self.BEST_POINT_CONV_SIZE = 120
+        self.MAX_LIDAR_DIST = 30000
+        self.STRAIGHTS_SPEED = 3.0
+        self.CORNERS_SPEED = 2.0
         self.STRAIGHTS_STEERING_ANGLE = np.pi / 18  # 10 degrees
 
     def preprocess_lidar(self, ranges):
@@ -63,7 +61,7 @@ class ReactiveFollowGap(Node):
         max_len = slices[0].stop - slices[0].start
         chosen_slice = slices[0]
         # I think we will only ever have a maximum of 2 slices but will handle an
-        # indefinitely sized list for portablility
+        # indefinitely sized list for portability
         for sl in slices[1:]:
             sl_len = sl.stop - sl.start
             if sl_len > max_len:
@@ -89,6 +87,20 @@ class ReactiveFollowGap(Node):
         steering_angle = lidar_angle / 2
         return steering_angle
 
+    def calculate_braking_factor(self, ranges, gap_start, gap_end):
+        # Calculate a braking factor based on the proximity of obstacles within the gap
+        left_proximity = np.mean(ranges[gap_start - 10: gap_start])
+        right_proximity = np.mean(ranges[gap_end: gap_end + 10])
+        return max(left_proximity, right_proximity) / self.MAX_LIDAR_DIST
+
+    def adjust_speed_based_on_braking_factor(self, braking_factor):
+        # Adjust the car's speed based on the calculated braking factor
+        # Reduce speed for tighter gaps with closer obstacles
+        if braking_factor > 0.5:
+            return self.STRAIGHTS_SPEED * 0.7  # Reduce speed by 50% when braking factor is high
+        else:
+            return self.STRAIGHTS_SPEED  # Maintain normal speed
+
     def lidar_callback(self, data):
         """
         Process each LiDAR scan as per the Follow Gap algorithm
@@ -110,6 +122,12 @@ class ReactiveFollowGap(Node):
         # Find max length gap
         gap_start, gap_end = self.find_max_gap(proc_ranges)
 
+        # Calculate braking factor
+        braking_factor = self.calculate_braking_factor(proc_ranges, gap_start, gap_end)
+        
+        # Adjust speed based on braking factor
+        speed = self.adjust_speed_based_on_braking_factor(braking_factor)
+
         # Find the best point in the gap
         best = self.find_best_point(gap_start, gap_end, proc_ranges)
 
@@ -117,8 +135,6 @@ class ReactiveFollowGap(Node):
         steering_angle = self.get_angle(best, len(proc_ranges))
         if abs(steering_angle) > self.STRAIGHTS_STEERING_ANGLE:
             speed = self.CORNERS_SPEED
-        else:
-            speed = self.STRAIGHTS_SPEED
         print('Steering angle in degrees: {}'.format((steering_angle / (np.pi / 2)) * 90))
 
         # Publish the drive message
